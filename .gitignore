@@ -1,0 +1,47 @@
+# Python cache and build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments and local dependency folders
+.venv/
+venv/
+env/
+ENV/
+
+# PyInstaller outputs
+build/
+dist/
+*.spec
+
+# Local capture/debug material.
+# These files can contain cookies, tenant IDs, user IDs, request bodies, and private JS bundles.
+captures/
+
+# Local logs and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+~$*
+
+# IDE/editor local settings
+.vscode/
+.idea/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local environment/secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
