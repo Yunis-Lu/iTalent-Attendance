@@ -15,6 +15,7 @@ from typing import Any
 from services.italent_client import ItalentClient
 from services.overtime import AttendanceSummary, format_minutes, merge_overtime_records, summarize_attendance
 from services.updater import ReleaseInfo, UpdateCheckResult, check_releases, download_release, install_downloaded_update
+from version import APP_VERSION
 
 
 def resource_path(relative_path: str) -> Path:
@@ -36,7 +37,6 @@ NEGATIVE_ROW_BG = "#fff1f2"
 NEGATIVE_ROW_FG = "#9f1239"
 DEFAULT_WORKDAY_END = "17:30"
 LOGIN_GROUP_GAP = 18
-APP_VERSION = "v0.2"
 APP_TITLE = f"iTalent-Attendance {APP_VERSION}"
 ICON_ICO = resource_path("assets/italent_icon_true_transparent.ico")
 ICON_PNG = resource_path("assets/italent_icon_true_transparent.png")
@@ -424,8 +424,9 @@ class AttendanceApp(tk.Tk):
         list_frame.bind("<MouseWheel>", on_mousewheel)
 
         if self.update_result.releases:
+            latest_update = self.update_result.latest_update
             for release in self.update_result.releases:
-                self._build_release_card(list_frame, release)
+                self._build_release_card(list_frame, release, can_download=release is latest_update)
         else:
             tk.Label(
                 list_frame,
@@ -465,7 +466,7 @@ class AttendanceApp(tk.Tk):
         window.lift()
         window.focus_force()
 
-    def _build_release_card(self, parent: tk.Widget, release: ReleaseInfo) -> None:
+    def _build_release_card(self, parent: tk.Widget, release: ReleaseInfo, can_download: bool) -> None:
         card_bg = "#eef5ff" if release.is_newer else PANEL
         border = "#b9cdf7" if release.is_newer else LINE
         accent_color = PRIMARY if release.is_newer else "#9fb2c9"
@@ -498,7 +499,7 @@ class AttendanceApp(tk.Tk):
             meta += f" · {release.asset_name}"
         tk.Label(top, text=meta, bg=card_bg, fg=MUTED, font=("Microsoft YaHei UI", 9)).grid(row=1, column=0, sticky=tk.W, pady=(5, 0))
 
-        if release.is_newer:
+        if can_download:
             button = ttk.Button(top, text="下载并更新", style="Primary.TButton")
             button.configure(command=lambda item=release, control=button: self._start_update_download(item, control))
             button.grid(row=0, column=1, rowspan=2, sticky=tk.E, padx=(16, 0))

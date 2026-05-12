@@ -39,6 +39,13 @@ class UpdateCheckResult:
     def has_update(self) -> bool:
         return any(release.is_newer for release in self.releases)
 
+    @property
+    def latest_update(self) -> ReleaseInfo | None:
+        newer_releases = [release for release in self.releases if release.is_newer]
+        if not newer_releases:
+            return None
+        return max(newer_releases, key=lambda release: _version_parts(release.tag))
+
 
 def check_releases(current_version: str) -> UpdateCheckResult:
     response = requests.get(
@@ -64,7 +71,7 @@ def check_releases(current_version: str) -> UpdateCheckResult:
             ReleaseInfo(
                 tag=tag,
                 name=name,
-                body=str(item.get("body") or "").strip(),
+                body=_clean_release_body(item.get("body")),
                 published_at=str(item.get("published_at") or ""),
                 html_url=str(item.get("html_url") or ""),
                 asset_name=asset_name,
@@ -167,6 +174,11 @@ def is_version_newer(remote: str, current: str) -> bool:
 
 def _version_parts(value: str) -> list[int]:
     return [int(part) for part in re.findall(r"\d+", value)]
+
+
+def _clean_release_body(value: object) -> str:
+    body = str(value or "")
+    return body.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
 def _find_windows_asset(assets: list[object]) -> tuple[str, str]:

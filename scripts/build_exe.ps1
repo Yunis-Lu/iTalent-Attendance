@@ -1,7 +1,15 @@
+[CmdletBinding()]
+param(
+  [string]$Version = "v0.2"
+)
+
 $ErrorActionPreference = "Stop"
 
-$appVersion = "v0.2"
+$appVersion = $Version
 $appName = "iTalent-Attendance.$appVersion"
+$versionFile = Join-Path $PSScriptRoot "..\iTalent-Attendance\version.py"
+$originalVersion = Get-Content -Raw -Encoding UTF8 $versionFile
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
 
 $argsList = @(
   "--noconfirm",
@@ -16,4 +24,10 @@ $argsList = @(
   "iTalent-Attendance\tk_main.py"
 )
 
-python -m PyInstaller @argsList
+try {
+  [System.IO.File]::WriteAllText($versionFile, "APP_VERSION = `"$appVersion`"`r`n", $utf8NoBom)
+  python -m PyInstaller @argsList
+}
+finally {
+  [System.IO.File]::WriteAllText($versionFile, $originalVersion, $utf8NoBom)
+}
