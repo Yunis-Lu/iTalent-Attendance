@@ -14,6 +14,7 @@ from typing import Any
 
 from services.italent_client import ItalentClient
 from services.overtime import AttendanceSummary, format_minutes, merge_overtime_records, summarize_attendance
+from services.updater import ReleaseInfo, UpdateCheckResult, check_releases, download_release, install_downloaded_update
 
 
 def resource_path(relative_path: str) -> Path:
@@ -35,29 +36,47 @@ NEGATIVE_ROW_BG = "#fff1f2"
 NEGATIVE_ROW_FG = "#9f1239"
 DEFAULT_WORKDAY_END = "17:30"
 LOGIN_GROUP_GAP = 18
+APP_VERSION = "v0.2"
+APP_TITLE = f"iTalent-Attendance {APP_VERSION}"
 ICON_ICO = resource_path("assets/italent_icon_true_transparent.ico")
 ICON_PNG = resource_path("assets/italent_icon_true_transparent.png")
 CREDENTIAL_TARGET = "iTalent-Attendance/iTalent"
+SPINNER_FRAMES = ("◐", "◓", "◑", "◒")
 
 
 class AttendanceApp(tk.Tk):
     def __init__(self) -> None:
         enable_dpi_awareness()
         super().__init__()
-        self.title("iTalent-Attendance v0.1")
+        self.title(APP_TITLE)
         self.geometry("1100x660")
         self.minsize(1040, 660)
         self.configure(bg=BG)
         self._set_window_icon()
         self.logo_image = load_logo_image(50)
         self.result_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+        self.update_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.summary: AttendanceSummary | None = None
         self.client: ItalentClient | None = None
         self.query_meta: dict[str, str] = {}
+        self.update_result: UpdateCheckResult | None = None
+        self.update_state = "idle"
+        self.update_message = ""
+        self.update_status_frame: tk.Frame | None = None
+        self.update_status_icon: tk.Label | None = None
+        self.update_status_text: tk.Label | None = None
+        self.update_window: tk.Toplevel | None = None
+        self.update_download_label: tk.Label | None = None
+        self.update_download_button: ttk.Button | None = None
+        self.update_download_release_tag: str | None = None
+        self.update_spinner_index = 0
+        self.update_spinner_job: str | None = None
         self._configure_styles()
         self._build_login_page()
         center_window(self)
         self.after(100, self._poll_result)
+        self.after(120, self._poll_update_result)
+        self.after(180, self._start_update_check)
 
     def _set_window_icon(self) -> None:
         if ICON_ICO.exists():
@@ -90,6 +109,8 @@ class AttendanceApp(tk.Tk):
         style.map("Primary.TButton", background=[("active", PRIMARY_DARK), ("disabled", "#93a4c7")])
         style.configure("Ghost.TButton", background=PANEL, foreground=PRIMARY, font=("Microsoft YaHei UI", 10, "bold"), padding=(14, 9), borderwidth=1)
         style.map("Ghost.TButton", background=[("active", "#eaf1ff")])
+        style.configure("SmallGhost.TButton", background=PANEL, foreground=PRIMARY, font=("Microsoft YaHei UI", 8, "bold"), padding=(12, 10), borderwidth=1)
+        style.map("SmallGhost.TButton", background=[("active", "#eaf1ff")])
         style.configure("Treeview", background="#ffffff", fieldbackground="#ffffff", foreground=INK, rowheight=38, bordercolor=LINE, font=("Microsoft YaHei UI", 10))
         style.configure("Treeview.Heading", background="#edf2f7", foreground=INK, font=("Microsoft YaHei UI", 10, "bold"), relief=tk.FLAT)
         style.configure(
@@ -173,9 +194,358 @@ class AttendanceApp(tk.Tk):
 
         self.query_button = ttk.Button(card, text="登录并计算", style="Primary.TButton", command=self._query)
         self.query_button.pack(fill=tk.X, padx=58, pady=(LOGIN_GROUP_GAP, 0))
+        self._build_update_status(shell)
         self.bind("<Return>", lambda _event: self._query())
         self.after_idle(lambda: center_window(self))
         self.after(120, lambda: center_window(self))
+
+    def _build_update_status(self, parent: tk.Widget) -> None:
+        self.update_status_frame = tk.Frame(parent, bg=BG, cursor="hand2")
+        self.update_status_frame.place(relx=1, rely=1, anchor=tk.SE, x=-8, y=-3)
+        self.update_status_icon = tk.Label(
+            self.update_status_frame,
+            text="",
+            bg=BG,
+            fg=MUTED,
+            font=("Microsoft YaHei UI", 10, "bold"),
+            width=1,
+            cursor="hand2",
+        )
+        self.update_status_icon.pack(side=tk.LEFT, padx=(0, 4), pady=7)
+        self.update_status_text = tk.Label(
+            self.update_status_frame,
+            text="",
+            bg=BG,
+            fg=MUTED,
+            font=("Microsoft YaHei UI", 9),
+            cursor="hand2",
+        )
+        self.update_status_text.pack(side=tk.LEFT, padx=(0, 0), pady=7)
+
+        def set_hover(active: bool, pressed: bool = False) -> None:
+            if not self.update_status_text or not self.update_status_icon:
+                return
+            color = PRIMARY_DARK if pressed else PRIMARY if active else None
+            font = ("Microsoft YaHei UI", 9, "underline") if active else ("Microsoft YaHei UI", 9)
+            self.update_status_text.configure(font=font)
+            if color:
+                self.update_status_icon.configure(fg=color)
+                self.update_status_text.configure(fg=color)
+            else:
+                self._paint_update_status()
+
+        def on_enter(_event: tk.Event) -> None:
+            set_hover(True)
+
+        def on_leave(_event: tk.Event) -> None:
+            set_hover(False)
+
+        def on_press(_event: tk.Event) -> None:
+            set_hover(True, pressed=True)
+
+        def on_release(_event: tk.Event) -> None:
+            set_hover(True)
+            self._handle_update_status_click()
+
+        for widget in (self.update_status_frame, self.update_status_icon, self.update_status_text):
+            widget.bind("<Enter>", on_enter)
+            widget.bind("<Leave>", on_leave)
+            widget.bind("<ButtonPress-1>", on_press)
+            widget.bind("<ButtonRelease-1>", on_release)
+        self._paint_update_status()
+
+    def _paint_update_status(self) -> None:
+        if (
+            not self.update_status_icon
+            or not self.update_status_text
+            or not self.update_status_icon.winfo_exists()
+            or not self.update_status_text.winfo_exists()
+        ):
+            return
+        if self.update_state == "checking":
+            icon = SPINNER_FRAMES[self.update_spinner_index % len(SPINNER_FRAMES)]
+            text = "正在检查更新"
+            color = PRIMARY
+        elif self.update_state == "failed":
+            icon = "!"
+            text = "连接GitHub失败，请更换网络环境"
+            color = "#b45309"
+        elif self.update_state == "has_update":
+            icon = "⬆"
+            text = "有新版本"
+            color = PRIMARY
+        elif self.update_state == "current":
+            icon = "✓"
+            text = "当前已是最新版本"
+            color = "#15803d"
+        else:
+            icon = "↻"
+            text = "检查更新"
+            color = MUTED
+        self.update_status_icon.configure(text=icon, fg=color)
+        self.update_status_text.configure(text=text, fg=color)
+        if self.update_state == "has_update":
+            self.update_status_icon.pack_configure(padx=(2, 2), pady=(8, 6))
+        else:
+            self.update_status_icon.pack_configure(padx=(0, 4), pady=(7, 7))
+
+    def _start_update_check(self, force: bool = False) -> None:
+        if self.update_state == "checking":
+            return
+        if self.update_result and not force:
+            self.update_state = "has_update" if self.update_result.has_update else "current"
+            self._paint_update_status()
+            return
+        self.update_state = "checking"
+        self.update_message = ""
+        self.update_spinner_index = 0
+        self._paint_update_status()
+        self._spin_update_status()
+        threading.Thread(target=self._update_check_worker, daemon=True).start()
+
+    def _spin_update_status(self) -> None:
+        if self.update_spinner_job:
+            try:
+                self.after_cancel(self.update_spinner_job)
+            except tk.TclError:
+                pass
+            self.update_spinner_job = None
+        if self.update_state != "checking":
+            self._paint_update_status()
+            return
+        self.update_spinner_index += 1
+        self._paint_update_status()
+        self.update_spinner_job = self.after(140, self._spin_update_status)
+
+    def _update_check_worker(self) -> None:
+        try:
+            self.update_queue.put(("success", check_releases(APP_VERSION)))
+        except Exception as exc:
+            self.update_queue.put(("failed", str(exc)))
+
+    def _poll_update_result(self) -> None:
+        try:
+            kind, payload = self.update_queue.get_nowait()
+        except queue.Empty:
+            self.after(120, self._poll_update_result)
+            return
+
+        if kind == "success":
+            self.update_result = payload
+            self.update_state = "has_update" if payload.has_update else "current"
+        elif kind == "failed":
+            self.update_message = str(payload)
+            self.update_state = "failed"
+        elif kind == "download_progress":
+            written, total = payload
+            self._set_update_download_message(format_download_progress(written, total))
+        elif kind == "download_error":
+            self._set_update_download_message(str(payload), error=True)
+        elif kind == "download_ready":
+            self._set_update_download_message("下载完成，正在替换并重启...")
+            try:
+                install_downloaded_update(payload)
+            except Exception as exc:
+                self._set_update_download_message(str(exc), error=True)
+        self._paint_update_status()
+        self.after(120, self._poll_update_result)
+
+    def _handle_update_status_click(self) -> None:
+        if self.update_state == "checking":
+            return
+        if self.update_state in {"failed", "idle"}:
+            self._start_update_check(force=True)
+            return
+        if self.update_result:
+            self._show_update_window()
+
+    def _show_update_window(self) -> None:
+        if not self.update_result:
+            return
+        if self.update_window and self.update_window.winfo_exists():
+            self.update_window.lift()
+            self.update_window.focus_force()
+            return
+
+        window = tk.Toplevel(self)
+        self.update_window = window
+        window.withdraw()
+        window.title(APP_TITLE)
+        window.geometry("820x620")
+        window.minsize(760, 540)
+        window.configure(bg=BG)
+        if ICON_ICO.exists():
+            try:
+                window.iconbitmap(default=str(ICON_ICO))
+            except tk.TclError:
+                pass
+
+        header = tk.Frame(window, bg="#eef5ff", highlightthickness=1, highlightbackground="#b9cdf7")
+        header.pack(fill=tk.X, padx=24, pady=(22, 14))
+        header.columnconfigure(0, weight=1)
+        ttk.Label(header, text="版本更新", font=("Microsoft YaHei UI", 19, "bold"), background="#eef5ff", foreground=INK).grid(row=0, column=0, sticky=tk.W, padx=18, pady=(16, 2))
+        tk.Label(
+            header,
+            text=f"当前版本 {APP_VERSION} · 更新记录来自 GitHub Releases",
+            bg="#eef5ff",
+            fg=MUTED,
+            font=("Microsoft YaHei UI", 10),
+        ).grid(row=1, column=0, sticky=tk.W, padx=18, pady=(0, 16))
+        status_text = "发现可更新版本" if self.update_result.has_update else "当前已是最新版本"
+        status_color = PRIMARY if self.update_result.has_update else "#15803d"
+        tk.Label(header, text=status_text, bg="#eef5ff", fg=status_color, font=("Microsoft YaHei UI", 11, "bold")).grid(row=0, column=1, rowspan=2, sticky=tk.E, padx=18)
+
+        outer = tk.Frame(window, bg=BG)
+        outer.pack(fill=tk.BOTH, expand=True, padx=24, pady=(0, 12))
+        outer.rowconfigure(0, weight=1)
+        outer.columnconfigure(0, weight=1)
+
+        canvas = tk.Canvas(outer, bg=BG, highlightthickness=0, bd=0)
+        list_frame = tk.Frame(canvas, bg=BG)
+        list_window = canvas.create_window((0, 0), window=list_frame, anchor=tk.NW)
+        yscroll = ModernScrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=yscroll.set)
+        canvas.grid(row=0, column=0, sticky=tk.NSEW, padx=(0, 0), pady=(0, 0))
+        yscroll.grid(row=0, column=1, sticky=tk.NS, padx=(4, 6), pady=8)
+
+        def update_scroll_region(_event: tk.Event | None = None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def resize_inner(event: tk.Event) -> None:
+            canvas.itemconfigure(list_window, width=event.width)
+
+        def on_mousewheel(event: tk.Event) -> str:
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            return "break"
+
+        list_frame.bind("<Configure>", update_scroll_region)
+        canvas.bind("<Configure>", resize_inner)
+        canvas.bind("<MouseWheel>", on_mousewheel)
+        list_frame.bind("<MouseWheel>", on_mousewheel)
+
+        if self.update_result.releases:
+            for release in self.update_result.releases:
+                self._build_release_card(list_frame, release)
+        else:
+            tk.Label(
+                list_frame,
+                text="GitHub 仓库里暂时还没有发布版本。",
+                bg=BG,
+                fg=MUTED,
+                font=("Microsoft YaHei UI", 10),
+            ).pack(anchor=tk.W, padx=18, pady=18)
+
+        footer = tk.Frame(window, bg=BG)
+        footer.pack(fill=tk.X, padx=24, pady=(0, 18))
+        self.update_download_label = tk.Label(footer, text="", bg=BG, fg=MUTED, font=("Microsoft YaHei UI", 9))
+        self.update_download_label.pack(side=tk.LEFT)
+        close_button = motion_button(
+            footer,
+            hover="#eef5ff",
+            pressed="#dbeafe",
+            text="关闭",
+            command=window.destroy,
+            bg=PANEL,
+            fg=PRIMARY,
+            activebackground="#eaf1ff",
+            activeforeground=PRIMARY_DARK,
+            font=("Microsoft YaHei UI", 8, "bold"),
+            width=6,
+            height=2,
+            bd=1,
+            relief=tk.SOLID,
+            highlightthickness=0,
+            cursor="hand2",
+        )
+        close_button.pack(side=tk.RIGHT)
+
+        window.transient(self)
+        center_window(window)
+        window.deiconify()
+        window.lift()
+        window.focus_force()
+
+    def _build_release_card(self, parent: tk.Widget, release: ReleaseInfo) -> None:
+        card_bg = "#eef5ff" if release.is_newer else PANEL
+        border = "#b9cdf7" if release.is_newer else LINE
+        accent_color = PRIMARY if release.is_newer else "#9fb2c9"
+        card = tk.Frame(parent, bg=card_bg, highlightthickness=1, highlightbackground=border)
+        card.pack(fill=tk.X, padx=2, pady=(0, 14))
+        card.columnconfigure(1, weight=1)
+
+        tk.Frame(card, bg=accent_color, width=5).grid(row=0, column=0, rowspan=3, sticky=tk.NS)
+
+        top = tk.Frame(card, bg=card_bg)
+        top.grid(row=0, column=1, sticky=tk.EW, padx=18, pady=(16, 8))
+        top.columnconfigure(0, weight=1)
+        title_row = tk.Frame(top, bg=card_bg)
+        title_row.grid(row=0, column=0, sticky=tk.W)
+        tk.Label(title_row, text=release.name, bg=card_bg, fg=INK, font=("Microsoft YaHei UI", 15, "bold")).pack(side=tk.LEFT)
+        badge_text = "预发布" if release.is_prerelease else "正式版"
+        badge_bg = "#fff7ed" if release.is_prerelease else "#ecfdf5"
+        badge_fg = "#b45309" if release.is_prerelease else "#15803d"
+        tk.Label(
+            title_row,
+            text=badge_text,
+            bg=badge_bg,
+            fg=badge_fg,
+            font=("Microsoft YaHei UI", 8, "bold"),
+            padx=8,
+            pady=2,
+        ).pack(side=tk.LEFT, padx=(10, 0))
+        meta = f"{release.tag} · {format_release_date(release.published_at)}"
+        if release.asset_name:
+            meta += f" · {release.asset_name}"
+        tk.Label(top, text=meta, bg=card_bg, fg=MUTED, font=("Microsoft YaHei UI", 9)).grid(row=1, column=0, sticky=tk.W, pady=(5, 0))
+
+        if release.is_newer:
+            button = ttk.Button(top, text="下载并更新", style="Primary.TButton")
+            button.configure(command=lambda item=release, control=button: self._start_update_download(item, control))
+            button.grid(row=0, column=1, rowspan=2, sticky=tk.E, padx=(16, 0))
+            if not release.download_url:
+                button.configure(state=tk.DISABLED, text="缺少 exe")
+            elif self.update_download_release_tag:
+                button.configure(state=tk.DISABLED, text="正在下载..." if self.update_download_release_tag == release.tag else "请稍候")
+
+        body = release.body or "这个版本没有填写更新记录。"
+        tk.Label(
+            card,
+            text=body,
+            bg=card_bg,
+            fg=INK,
+            font=("Microsoft YaHei UI", 10),
+            justify=tk.LEFT,
+            anchor=tk.W,
+            wraplength=720,
+        ).grid(row=1, column=1, sticky=tk.W, padx=18, pady=(0, 16))
+
+    def _start_update_download(self, release: ReleaseInfo, button: ttk.Button | None = None) -> None:
+        if self.update_download_release_tag:
+            self._set_update_download_message("更新正在下载，请稍候...")
+            return
+        if not messagebox.askyesno("确认更新", f"确定下载并更新到 {release.tag} 吗？\n下载完成后程序会自动重启。", parent=self.update_window or self):
+            return
+        self._set_update_download_message("正在下载更新...")
+        self.update_download_release_tag = release.tag
+        self.update_download_button = button
+        if button:
+            button.configure(state=tk.DISABLED, text="正在下载...")
+        threading.Thread(target=self._download_update_worker, args=(release,), daemon=True).start()
+
+    def _download_update_worker(self, release: ReleaseInfo) -> None:
+        try:
+            path = download_release(release, progress=lambda written, total: self.update_queue.put(("download_progress", (written, total))))
+            self.update_queue.put(("download_ready", path))
+        except Exception as exc:
+            self.update_queue.put(("download_error", str(exc)))
+
+    def _set_update_download_message(self, message: str, error: bool = False) -> None:
+        if self.update_download_label and self.update_download_label.winfo_exists():
+            self.update_download_label.configure(text=message, fg="#b45309" if error else MUTED)
+        if error:
+            self.update_download_release_tag = None
+            if self.update_download_button and self.update_download_button.winfo_exists():
+                self.update_download_button.configure(state=tk.NORMAL, text="重新下载")
 
     def _field(self, parent: tk.Widget, label: str, variable: tk.StringVar, row: int) -> ttk.Entry:
         ttk.Label(parent, text=label, style="Panel.TLabel").grid(row=row * 2, column=0, sticky=tk.W, pady=(0, 7))
@@ -1027,6 +1397,23 @@ def ascii_char_from_event(event: tk.Event) -> str:
     if shifted and keysym in shifted_map:
         return shifted_map[keysym]
     return normal.get(keysym, "")
+
+
+def format_release_date(value: str) -> str:
+    if not value:
+        return "未知发布时间"
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%Y/%m/%d")
+    except ValueError:
+        return value[:10] or "未知发布时间"
+
+
+def format_download_progress(written: int, total: int) -> str:
+    if total > 0:
+        percent = min(100, int(written * 100 / total))
+        return f"正在下载更新... {percent}%"
+    size_mb = written / 1024 / 1024
+    return f"正在下载更新... {size_mb:.1f} MB"
 
 
 def validate_date_range(start_date: str, end_date: str) -> bool:

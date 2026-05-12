@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 from copy import deepcopy
+import time
 from typing import Any
+import uuid
 
 import requests
 from cryptography.hazmat.primitives import serialization
@@ -48,7 +50,15 @@ class ItalentClient:
     def __init__(self) -> None:
         self.user_id = ""
         self.session = requests.Session()
+        self._reset_session()
+
+    def _reset_session(self) -> None:
+        self.session.close()
+        self.session = requests.Session()
         self.session.cookies.set("iTalent-tenantId", DEFAULT_TENANT_ID, domain=".italent.cn")
+        self.session.cookies.set("isItalentLogin", "", domain=".italent.cn")
+        self.session.cookies.set("italentLoginSync", str(int(time.time() * 1000)), domain=".italent.cn")
+        self.session.cookies.set(f"user_polling_timespace_{DEFAULT_TENANT_ID}", "0", domain=".italent.cn")
 
     def login(self, username: str, password: str) -> dict[str, Any]:
         payload = {
@@ -64,12 +74,19 @@ class ItalentClient:
             "lt": "zh_CN",
         }
 
-        response = self.session.post(LOGIN_URL, json=payload, headers=_login_headers(), timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        if data.get("Code") != 1:
-            message = data.get("Message") or data.get("MessageCode") or "登录失败"
-            raise RuntimeError(str(message))
+        data: dict[str, Any] = {}
+        for attempt in range(2):
+            trace_id = str(uuid.uuid4())
+            response = self.session.post(LOGIN_URL, json=payload, headers=_login_headers(trace_id), timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            if data.get("Code") == 1:
+                break
+            message = str(data.get("Message") or data.get("MessageCode") or "登录失败")
+            if attempt == 0 and _requires_geetest(message):
+                self._reset_session()
+                continue
+            raise RuntimeError(_login_error_message(message))
 
         login_data = data.get("Data") or {}
         self.user_id = str(login_data.get("UserId") or login_data.get("UserID") or "")
@@ -119,14 +136,28 @@ def encrypt_password(password: str) -> str:
     return base64.b64encode(encrypted).decode("ascii")
 
 
-def _login_headers() -> dict[str, str]:
+def _login_headers(trace_id: str) -> dict[str, str]:
     return {
         "Accept": "application/json, application/xml, text/play, text/html, */*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
         "Content-Type": "application/json;charset=utf-8",
+        "EagleEye-TraceID": trace_id,
         "Origin": "https://www.italent.cn",
         "Referer": "https://www.italent.cn/",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
         "User-Agent": _user_agent(),
         "X-Sourced-By": "ajax",
+        "fal": "",
+        "fan": "",
+        "fpl": "",
+        "fpn": "",
+        "ftc": trace_id,
+        "fver": "",
+        "sec-ch-ua": '"Microsoft Edge";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
     }
 
 
@@ -147,6 +178,16 @@ def _user_agent() -> str:
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0"
     )
+
+
+def _requires_geetest(message: str) -> bool:
+    return "极验" in message or "Geetest" in message
+
+
+def _login_error_message(message: str) -> str:
+    if _requires_geetest(message):
+        return "iTalent 临时要求登录验证。请等待几秒后重新登录；如果仍然失败，请先在网页登录一次后再回到软件。"
+    return message
 
 
 def _attendance_payload(staff_id: str, username: str, start_date: str, end_date: str) -> dict[str, Any]:
