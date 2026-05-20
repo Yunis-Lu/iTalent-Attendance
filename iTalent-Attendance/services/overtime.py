@@ -160,9 +160,12 @@ def _parse_row(
         if is_workday:
             minutes = _workday_overtime_minutes(effective_first_dt, effective_last_dt, workday_end)
             note = "工作日 08:30 前 + 17:30 后"
-        else:
+        elif date_type_value == "1" and is_saturday:
             minutes = _restday_overtime_minutes(effective_first_dt, effective_last_dt, lunch_start, lunch_end)
-            note = "非工作日打卡时长（扣午休）"
+            note = "单休日打卡时长（扣午休）"
+        else:
+            minutes = 0
+            note = "休息日仅按加班申请计算"
 
     if not is_today:
         applied_minutes = _parse_applied_overtime_minutes(remark_text, lunch_start, lunch_end)
@@ -270,12 +273,11 @@ def _workday_overtime_minutes(first_dt: datetime, last_dt: datetime, workday_end
 def _restday_overtime_minutes(first_dt: datetime, last_dt: datetime, lunch_start: str, lunch_end: str) -> int:
     standard_start = datetime.combine(first_dt.date(), _parse_time("08:30"))
     standard_end = datetime.combine(first_dt.date(), _parse_time("17:30"))
-    late_start = datetime.combine(first_dt.date(), _parse_time("18:30"))
 
     early = _minutes_between(first_dt, min(last_dt, standard_start))
     base = _overlap_datetime_minutes(first_dt, last_dt, standard_start, standard_end)
     base -= _overlap_minutes(max(first_dt, standard_start), min(last_dt, standard_end), lunch_start, lunch_end)
-    late = _minutes_between(max(first_dt, late_start), last_dt)
+    late = _minutes_between(max(first_dt, standard_end), last_dt)
     return max(0, early + base + late)
 
 

@@ -7,6 +7,7 @@ import queue
 import sys
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
 from datetime import date, datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -42,6 +43,30 @@ ICON_ICO = resource_path("assets/italent_icon_true_transparent.ico")
 ICON_PNG = resource_path("assets/italent_icon_true_transparent.png")
 CREDENTIAL_TARGET = "iTalent-Attendance/iTalent"
 SPINNER_FRAMES = ("◐", "◓", "◑", "◒")
+REST_DAY_ICON_PNG = resource_path("assets/rest_day_icon.png")
+REST_DAY_ICON_COLOR = "#F28D49"
+REST_DAY_ICON_PATTERN = (
+    "...##...##...##..",
+    "..##...##...##...",
+    "...##...##...##..",
+    "..##...##...##...",
+    "..................",
+    "..##############..",
+    ".##............##.",
+    ".##............##.",
+    ".##............##.",
+    ".##............##.",
+    ".##............##.",
+    "..##..........##..",
+    "...############...",
+    "....##########....",
+    ".....########.....",
+    "..................",
+    "..................",
+)
+REST_DAY_ICON_GAP = 2
+REST_DAY_ICON_X_OFFSET = 11
+DETAIL_SELECTED_BG = "#dbeafe"
 
 
 class AttendanceApp(tk.Tk):
@@ -54,6 +79,7 @@ class AttendanceApp(tk.Tk):
         self.configure(bg=BG)
         self._set_window_icon()
         self.logo_image = load_logo_image(50)
+        self.rest_day_icon = create_rest_day_icon()
         self.result_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.update_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.summary: AttendanceSummary | None = None
@@ -122,9 +148,14 @@ class AttendanceApp(tk.Tk):
             bordercolor=LINE,
             lightcolor=LINE,
             darkcolor=LINE,
-            borderwidth=1,
-            relief=tk.SOLID,
+            focuscolor="",
+            borderwidth=0,
+            relief=tk.FLAT,
             font=("Microsoft YaHei UI", 10),
+        )
+        style.layout(
+            "Detail.Treeview",
+            [("Treeview.padding", {"sticky": "nswe", "children": [("Treeview.treearea", {"sticky": "nswe"})]})],
         )
         style.configure(
             "Detail.Treeview.Heading",
@@ -137,7 +168,15 @@ class AttendanceApp(tk.Tk):
             borderwidth=1,
             relief=tk.SOLID,
         )
-        style.map("Detail.Treeview", background=[("selected", "#dbeafe")], foreground=[("selected", INK)])
+        style.map(
+            "Detail.Treeview",
+            background=[("selected", DETAIL_SELECTED_BG)],
+            foreground=[("selected", INK)],
+            bordercolor=[("focus", LINE)],
+            lightcolor=[("focus", LINE)],
+            darkcolor=[("focus", LINE)],
+            focuscolor=[("focus", "")],
+        )
 
     def _clear(self) -> None:
         for child in self.winfo_children():
@@ -422,6 +461,7 @@ class AttendanceApp(tk.Tk):
         canvas.bind("<Configure>", resize_inner)
         canvas.bind("<MouseWheel>", on_mousewheel)
         list_frame.bind("<MouseWheel>", on_mousewheel)
+        window.bind("<MouseWheel>", on_mousewheel, add=True)
 
         if self.update_result.releases:
             latest_update = self.update_result.latest_update
@@ -569,6 +609,7 @@ class AttendanceApp(tk.Tk):
         column: int,
         padx: tuple[int, int] = (0, 0),
         pady: tuple[int, int] | int = 0,
+        on_month_selected: Any | None = None,
     ) -> tk.Frame:
         box = tk.Frame(parent, bg=SOFT, highlightthickness=1, highlightbackground=LINE, cursor="hand2")
         box.grid(row=0, column=column, sticky=tk.EW, padx=padx, pady=pady)
@@ -579,7 +620,7 @@ class AttendanceApp(tk.Tk):
         value.grid(row=1, column=0, sticky=tk.W, padx=14, pady=(0, 7))
 
         def open_picker(_event: tk.Event | None = None) -> None:
-            DatePicker(self, variable)
+            DatePicker(self, variable, on_month_selected=on_month_selected)
 
         def refresh(*_args: object) -> None:
             value.configure(text=variable.get())
@@ -697,8 +738,8 @@ class AttendanceApp(tk.Tk):
         filters = tk.Frame(root, bg=PANEL, highlightthickness=1, highlightbackground=LINE)
         filters.pack(fill=tk.X, pady=(18, 0))
         filters.columnconfigure((0, 1), weight=1, uniform="dates")
-        self._date_box(filters, "开始日期", self.start_var, 0, padx=(22, 12), pady=14)
-        self._date_box(filters, "结束日期", self.end_var, 1, padx=(0, 18), pady=14)
+        self._date_box(filters, "开始日期", self.start_var, 0, padx=(22, 12), pady=14, on_month_selected=self._requery)
+        self._date_box(filters, "结束日期", self.end_var, 1, padx=(0, 18), pady=14, on_month_selected=self._requery)
         ttk.Button(filters, text="重新查询", style="Primary.TButton", command=self._requery).grid(row=0, column=2, padx=(0, 22), pady=16, sticky=tk.NS)
 
         hero = tk.Frame(root, bg="#eef5ff", highlightthickness=1, highlightbackground="#b9cdf7")
@@ -753,10 +794,10 @@ class AttendanceApp(tk.Tk):
                 window.iconbitmap(default=str(ICON_ICO))
             except tk.TclError:
                 pass
-        detail_width = min(1650, max(1200, window.winfo_screenwidth() - 32))
+        detail_width = min(1850, max(1320, window.winfo_screenwidth() - 18))
         detail_height = min(780, max(680, window.winfo_screenheight() - 80))
         window.geometry(f"{detail_width}x{detail_height}")
-        window.minsize(min(1480, detail_width), min(700, detail_height))
+        window.minsize(min(1580, detail_width), min(700, detail_height))
         window.configure(bg=BG)
 
         header = tk.Frame(window, bg=BG)
@@ -778,9 +819,8 @@ class AttendanceApp(tk.Tk):
 
     def _build_detail_table(self, parent: tk.Widget) -> None:
         assert self.summary is not None
-        columns = ("date", "first", "last", "type", "status", "value", "remark")
+        columns = ("first", "last", "type", "status", "value", "remark")
         headers = {
-            "date": "日期",
             "first": "首次打卡",
             "last": "最后打卡",
             "type": "日期类型",
@@ -788,8 +828,8 @@ class AttendanceApp(tk.Tk):
             "value": "奋斗值",
             "remark": "备注",
         }
-        widths = {"date": 130, "first": 210, "last": 210, "type": 105, "status": 85, "value": 180, "remark": 520}
-        table = ttk.Treeview(parent, columns=columns, show="headings", selectmode="browse", style="Detail.Treeview")
+        widths = {"first": 230, "last": 230, "type": 110, "status": 90, "value": 180, "remark": 680}
+        table = ttk.Treeview(parent, columns=columns, show="tree headings", selectmode="browse", style="Detail.Treeview", takefocus=False)
         table.tag_configure("odd", background="#ffffff")
         table.tag_configure("even", background="#f8fbff")
         table.tag_configure("positive", background=POSITIVE_ROW_BG, foreground=POSITIVE_ROW_FG, font=("Microsoft YaHei UI", 10, "bold"))
@@ -798,12 +838,36 @@ class AttendanceApp(tk.Tk):
         table.tag_configure("hover_positive", background="#c6ebd2", foreground=POSITIVE_ROW_FG, font=("Microsoft YaHei UI", 10, "bold"))
         table.tag_configure("hover_negative", background="#ffe4e8", foreground=NEGATIVE_ROW_FG, font=("Microsoft YaHei UI", 10, "bold"))
 
+        table.heading("#0", text="考勤日期", anchor=tk.CENTER)
+        table.column("#0", width=245, minwidth=225, anchor=tk.W, stretch=False)
         for key in columns:
             table.heading(key, text=headers[key], anchor=tk.CENTER)
             table.column(key, width=widths[key], minwidth=70, anchor=tk.CENTER, stretch=True)
 
-        yscroll = ModernScrollbar(parent, orient=tk.VERTICAL, command=table.yview)
-        table.configure(yscrollcommand=yscroll.set)
+        rest_icon_labels: list[tuple[str, tk.Label, str]] = []
+        date_font = tkfont.Font(font=("Microsoft YaHei UI", 10))
+        focus_sink = tk.Frame(parent, width=1, height=1, bg=PANEL, highlightthickness=0, takefocus=True)
+        focus_sink.place(x=-20, y=-20)
+
+        def position_rest_icons() -> None:
+            for item, label, base_bg in rest_icon_labels:
+                bbox = table.bbox(item, "#0")
+                if not bbox:
+                    label.place_forget()
+                    continue
+                x, y, _width, height = bbox
+                icon_bg = DETAIL_SELECTED_BG if item in table.selection() else base_bg
+                label.configure(bg=icon_bg)
+                text_width = date_font.measure(str(table.item(item, "text")))
+                icon_y = y + max(0, (height - self.rest_day_icon.height()) // 2)
+                label.place(x=x + 8 + text_width + REST_DAY_ICON_GAP + REST_DAY_ICON_X_OFFSET, y=icon_y)
+
+        def scroll_table(*args: object) -> None:
+            table.yview(*args)
+            table.after_idle(position_rest_icons)
+
+        yscroll = ModernScrollbar(parent, orient=tk.VERTICAL, command=scroll_table)
+        table.configure(yscrollcommand=lambda first, last: (yscroll.set(first, last), table.after_idle(position_rest_icons)))
         table.grid(row=0, column=0, sticky=tk.NSEW, padx=(1, 0), pady=(1, 0))
         yscroll.grid(row=0, column=1, sticky=tk.NS, padx=(6, 6), pady=8)
         parent.columnconfigure(0, weight=1)
@@ -815,15 +879,37 @@ class AttendanceApp(tk.Tk):
                 tags.append("negative")
             elif row.applied_overtime_minutes > 0 or (row.overtime_minutes > 0 and not row.is_workday):
                 tags.append("positive")
-            table.insert(
+            item = table.insert(
                 "",
                 tk.END,
-                values=(row.date, row.first_card, row.last_card, row.date_type, row.status, format_minutes(row.net_minutes), row.remark),
+                text=format_detail_date(row.date),
+                values=(
+                    row.first_card,
+                    row.last_card,
+                    row.date_type,
+                    row.status,
+                    format_minutes(row.net_minutes),
+                    row.remark,
+                ),
                 tags=tuple(tags),
             )
+            if should_show_rest_icon(row.date_type):
+                icon_bg = "#f8fbff" if "even" in tags else "#ffffff"
+                label = tk.Label(
+                    table,
+                    image=self.rest_day_icon,
+                    bg=icon_bg,
+                    bd=0,
+                    highlightthickness=0,
+                    padx=0,
+                    pady=0,
+                    cursor="arrow",
+                )
+                rest_icon_labels.append((item, label, icon_bg))
 
         def on_mousewheel(event: tk.Event) -> str:
             table.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            table.after_idle(position_rest_icons)
             return "break"
 
         def bind_wheel(_event: tk.Event) -> None:
@@ -841,12 +927,12 @@ class AttendanceApp(tk.Tk):
                 hover_state["item"] = ""
                 hover_state["tags"] = ()
 
-        def on_table_motion(event: tk.Event) -> None:
-            item = table.identify_row(event.y)
+        def set_hover_item(item: str) -> None:
             if item == hover_state["item"]:
                 return
             clear_hover()
             if not item:
+                table.after_idle(position_rest_icons)
                 return
             tags = tuple(table.item(item, "tags"))
             hover_state["item"] = item
@@ -858,19 +944,55 @@ class AttendanceApp(tk.Tk):
             else:
                 hover_tag = "hover"
             table.item(item, tags=tags + (hover_tag,))
+            table.after_idle(position_rest_icons)
 
-        def on_table_press(event: tk.Event) -> None:
-            item = table.identify_row(event.y)
+        def on_table_motion(event: tk.Event) -> None:
+            set_hover_item(table.identify_row(event.y))
+
+        def select_item(item: str) -> None:
             if item:
                 table.selection_set(item)
                 table.focus(item)
+                table.after_idle(position_rest_icons)
+
+        def on_table_press(event: tk.Event) -> str | None:
+            region = table.identify_region(event.x, event.y)
+            if region == "separator":
+                return None
+            if region == "heading":
+                table.state(["!focus"])
+                focus_sink.focus_set()
+                table.after_idle(lambda: (table.state(["!focus"]), focus_sink.focus_set()))
+                return "break"
+            item = table.identify_row(event.y)
+            if item:
+                select_item(item)
+                return "break"
+            return None
+
+        def keep_table_unfocused(_event: tk.Event) -> None:
+            table.state(["!focus"])
+            parent.after_idle(lambda: (table.state(["!focus"]), focus_sink.focus_set()))
 
         table.bind("<MouseWheel>", on_mousewheel)
+        table.bind("<Configure>", lambda _event: table.after_idle(position_rest_icons))
+        table.bind("<Expose>", lambda _event: table.after_idle(position_rest_icons))
         table.bind("<Enter>", bind_wheel)
         table.bind("<Leave>", lambda event: (clear_hover(), unbind_wheel(event)))
         table.bind("<Motion>", on_table_motion)
         table.bind("<ButtonPress-1>", on_table_press)
-        table.focus_set()
+        table.bind("<ButtonRelease-1>", lambda event: "break" if table.identify_region(event.x, event.y) == "heading" else None)
+        table.bind("<FocusIn>", keep_table_unfocused)
+
+        def bind_icon_events(item: str, label: tk.Label) -> None:
+            label.bind("<MouseWheel>", on_mousewheel)
+            label.bind("<Enter>", lambda event, row=item: (bind_wheel(event), set_hover_item(row)))
+            label.bind("<Leave>", lambda event: (clear_hover(), unbind_wheel(event), table.after_idle(position_rest_icons)))
+            label.bind("<ButtonPress-1>", lambda _event, row=item: (select_item(row), "break")[-1])
+
+        for icon_item, icon_label, _icon_bg in rest_icon_labels:
+            bind_icon_events(icon_item, icon_label)
+        table.after_idle(position_rest_icons)
 
 
 def animate_background(widgets: tuple[tk.Widget, ...], target: str, steps: int = 6, delay: int = 12) -> None:
@@ -1039,10 +1161,11 @@ class ModernScrollbar(tk.Canvas):
 
 
 class DatePicker(tk.Toplevel):
-    def __init__(self, parent: tk.Tk, target: tk.StringVar) -> None:
+    def __init__(self, parent: tk.Tk, target: tk.StringVar, on_month_selected: Any | None = None) -> None:
         super().__init__(parent)
         self.parent_app = parent
         self.target = target
+        self.on_month_selected = on_month_selected
         self.title("选择日期")
         self.resizable(False, False)
         self.configure(bg=PANEL)
@@ -1164,6 +1287,8 @@ class DatePicker(tk.Toplevel):
         else:
             self.target.set(first_day.strftime("%Y/%m/%d"))
         self.destroy()
+        if self.on_month_selected:
+            self.parent_app.after_idle(self.on_month_selected)
 
     def _render(self) -> None:
         for child in self.grid_frame.winfo_children():
@@ -1417,6 +1542,62 @@ def format_download_progress(written: int, total: int) -> str:
     return f"正在下载更新... {size_mb:.1f} MB"
 
 
+def row_background(tags: list[str] | tuple[str, ...], selected: bool = False) -> str:
+    if selected:
+        return DETAIL_SELECTED_BG
+    if "hover_negative" in tags:
+        return "#ffe4e8"
+    if "hover_positive" in tags:
+        return "#c6ebd2"
+    if "hover" in tags:
+        return "#eaf1ff"
+    if "negative" in tags:
+        return NEGATIVE_ROW_BG
+    if "positive" in tags:
+        return POSITIVE_ROW_BG
+    if "even" in tags:
+        return "#f8fbff"
+    return "#ffffff"
+
+def create_rest_day_icon() -> tk.PhotoImage:
+    if REST_DAY_ICON_PNG.exists():
+        try:
+            return tk.PhotoImage(file=str(REST_DAY_ICON_PNG))
+        except tk.TclError:
+            pass
+    image = tk.PhotoImage(width=21, height=22)
+    try:
+        for y in range(image.height()):
+            for x in range(image.width()):
+                image.transparency_set(x, y, True)
+    except tk.TclError:
+        pass
+    for y, row in enumerate(REST_DAY_ICON_PATTERN, start=1):
+        for x, point in enumerate(row, start=1):
+            if point == "#":
+                image.put(REST_DAY_ICON_COLOR, (x + 1, y + 1))
+                try:
+                    image.transparency_set(x + 1, y + 1, False)
+                except tk.TclError:
+                    pass
+    return image
+
+
+def format_detail_date(value: str) -> str:
+    weekdays = ("\u661f\u671f\u4e00", "\u661f\u671f\u4e8c", "\u661f\u671f\u4e09", "\u661f\u671f\u56db", "\u661f\u671f\u4e94", "\u661f\u671f\u516d", "\u661f\u671f\u65e5")
+    for fmt in ("%Y/%m/%d", "%Y-%m-%d"):
+        try:
+            parsed = datetime.strptime(value, fmt)
+            return f"{parsed.strftime('%Y-%m-%d')} {weekdays[parsed.weekday()]}"
+        except ValueError:
+            continue
+    return value.replace("/", "-")
+
+
+def should_show_rest_icon(date_type: str) -> bool:
+    return bool(date_type and date_type.strip() != "\u5de5\u4f5c\u65e5")
+
+
 def validate_date_range(start_date: str, end_date: str) -> bool:
     try:
         start = datetime.strptime(start_date, "%Y/%m/%d")
@@ -1447,9 +1628,23 @@ def center_window(window: tk.Toplevel | tk.Tk) -> None:
     if width <= 1 or height <= 1:
         geometry = window.geometry().split("+")[0]
         width, height = [int(part) for part in geometry.split("x")]
-    x = max(0, (window.winfo_screenwidth() - width) // 2)
-    y = max(0, (window.winfo_screenheight() - height) // 2)
+
+    left, top, right, bottom = get_work_area(window)
+    outer_width = max(width, window.winfo_rootx() - window.winfo_x() + width)
+    outer_height = max(height, window.winfo_rooty() - window.winfo_y() + height)
+    x = left + max(0, (right - left - outer_width) // 2)
+    y = top + max(0, (bottom - top - outer_height) // 2)
     window.geometry(f"{width}x{height}+{x}+{y}")
+
+
+def get_work_area(window: tk.Toplevel | tk.Tk) -> tuple[int, int, int, int]:
+    rect = wintypes.RECT()
+    try:
+        if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):
+            return rect.left, rect.top, rect.right, rect.bottom
+    except Exception:
+        pass
+    return 0, 0, window.winfo_screenwidth(), window.winfo_screenheight()
 
 
 def current_month_range() -> tuple[str, str]:

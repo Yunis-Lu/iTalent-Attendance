@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [string]$Version = "v0.2"
+  [string]$Version = "v0.3"
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,6 +20,7 @@ $argsList = @(
   "--icon", "assets\italent_icon_true_transparent.ico",
   "--add-data", "assets\italent_icon_true_transparent.ico;assets",
   "--add-data", "assets\italent_icon_true_transparent.png;assets",
+  "--add-data", "assets\rest_day_icon.png;assets",
   "--name", $appName,
   "iTalent-Attendance\tk_main.py"
 )
